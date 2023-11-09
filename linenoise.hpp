@@ -1172,7 +1172,9 @@ static struct termios orig_termios; /* In order to restore at exit.*/
 #endif
 static bool rawmode = false; /* For atexit() function to check if restore is needed*/
 static bool mlmode = false;  /* Multi line mode. Default is single line. */
+static bool maskedmode = false; /* Masked mode. Default is unmasked. */
 static bool atexit_registered = false; /* Register atexit just 1 time. */
+static char mask_char = '*'; /* The character used to mask the input strings */
 static size_t history_max_len = LINENOISE_DEFAULT_HISTORY_MAX_LEN;
 static std::vector<std::string> history;
 
@@ -1679,6 +1681,12 @@ inline void SetMultiLine(bool ml) {
     mlmode = ml;
 }
 
+/* Set to switch to masked mode. The mask char is also settable */
+inline void SetMaskedMode(bool mm, char mask_ch = '*') {
+	maskedmode = mm;
+	mask_char = mask_ch;
+}
+
 /* Return true if the terminal name is in the list of terminals we know are
  * not able to understand basic escape sequences. */
 inline bool isUnsupportedTerm(void) {
@@ -1934,6 +1942,11 @@ inline void SetCompletionCallback(CompletionCallback fn) {
 
 /* =========================== Line editing ================================= */
 
+/* Masks the input string. */
+inline std::string Masked(const char *buf, int len) {
+	return std::string(unicodeColumnPos(buf, len), mask_char);
+}
+
 /* Single line low level line refresh.
  *
  * Rewrite the currently edited line accordingly to the buffer content,
@@ -1962,7 +1975,10 @@ inline void refreshSingleLine(struct linenoiseState *l) {
     ab += seq;
     /* Write the prompt and the current buffer content */
     ab += l->prompt;
-    ab.append(buf, len);
+
+	/* Masked mode? Mask the current buffer content before appending*/
+	maskedmode ? ab.append(Masked(buf, len)) : ab.append(buf, len);
+
     /* Erase to right */
     snprintf(seq,64,"\x1b[0K");
     ab += seq;
@@ -2009,9 +2025,11 @@ inline void refreshMultiLine(struct linenoiseState *l) {
     snprintf(seq,64,"\r\x1b[0K");
     ab += seq;
 
-    /* Write the prompt and the current buffer content */
-    ab += l->prompt;
-    ab.append(l->buf, l->len);
+	/* Write the prompt and the current buffer content */
+	ab += l->prompt;
+
+	/* Masked mode? Mask the current buffer content before appending */
+	maskedmode ? ab.append(Masked(l->buf, l->len)) : ab.append(l->buf, l->len);
 
     /* Get text width to cursor position */
     colpos2 = unicodeColumnPosForMultiLine(l->buf, l->len, l->pos, l->cols, pcolwid);
@@ -2073,7 +2091,12 @@ inline int linenoiseEditInsert(struct linenoiseState *l, const char* cbuf, int c
             if ((!mlmode && unicodeColumnPos(l->prompt.c_str(), static_cast<int>(l->prompt.length()))+unicodeColumnPos(l->buf,l->len) < l->cols) /* || mlmode */) {
                 /* Avoid a full update of the line in the
                  * trivial case. */
-                if (write(l->ofd,cbuf,clen) == -1) return -1;
+					if (maskedmode)	{
+						std::string maskedBuffer { Masked(cbuf, clen) };
+						if (write(l->ofd, maskedBuffer.c_str(), static_cast<int>(maskedBuffer.length())) == -1) return -1;
+					} else {
+                        if (write(l->ofd,cbuf,clen) == -1) return -1;
+					}
             } else {
                 refreshLine(l);
             }
